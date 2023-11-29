@@ -7,6 +7,7 @@ library(ranger)
 library(parallel)
 library(timetk)
 library(modeltime)
+library(forecast) #for auto.arima
 
 # Load data
 train <- vroom("data/train.csv")
@@ -26,9 +27,9 @@ subRecipe <- recipe(sales ~ ., data = subTrain) %>%
 prepped <- prep(subRecipe)
 baked <- bake(prepped, new_data = subTrain)
 
-# New data with date features
+# New data with date features for 2nd Exponential Smoothing model
 subTrain2 <- train %>%
-  filter(store == 7, item == 17) %>% 
+  filter(store == 4, item == 15) %>% 
   select(-store, -item)
 
 subRecipe2 <- recipe(sales ~ ., data = subTrain2) %>% 
@@ -84,6 +85,7 @@ collect_metrics(treeCVResults) %>%
   pull("mean")
   
 
+
 # Exponential Smoothing 1 -------------------------------------------------
 # Create cross validation split 
 cv_split <- time_series_split(subTrain, assess="3 months", cumulative = TRUE)
@@ -123,17 +125,6 @@ p2 <- es_fullfit %>%
   plot_modeltime_forecast(.interactive=FALSE)
 
 
-
-
-
-
-  
-
-
-
-
-
-
 # Exponential Smoothing 2 -------------------------------------------------
 cv_split2 <- time_series_split(subTrain2, assess="3 months", cumulative = TRUE)
 
@@ -170,5 +161,136 @@ es_preds2 <- es_fullfit2 %>%
 p4 <- es_fullfit2 %>%
   modeltime_forecast(h = "3 months", actual_data = subTrain2) %>%
   plot_modeltime_forecast(.interactive=FALSE)
+
+plotly::subplot(p1, p2, p3, p4, nrows=2)
+
+
+
+
+# SARIMA ------------------------------------------------------------------
+arima_recipe <- recipe(sales ~ ., data = subTrain) %>% 
+  step_date(date,features = c("year", "doy", "week", "quarter"))
+
+cv_split <- time_series_split(subTrain, assess="3 months", cumulative = TRUE)
+
+S = 180
+
+arima_model <- arima_reg(seasonal_period=S,
+                         non_seasonal_ar=5, # default max p to tune
+                         non_seasonal_ma=5, # default max q to tune
+                         seasonal_ar=2, # default max P to tune
+                         seasonal_ma=2, #default max Q to tune
+                         non_seasonal_differences=2, # default max d to tune
+                         seasonal_differences=2 #default max D to tune
+                        ) %>%
+                        set_engine("auto_arima")
+
+cl <- makePSOCKcluster(4)
+doParallel::registerDoParallel(cl)
+
+arima_wf <- workflow() %>%
+  add_recipe(arima_recipe) %>%
+  add_model(arima_model) %>%
+  fit(data=training(cv_split))
+proc.time()
+
+## Calibrate (i.e. tune) workflow
+cv_results <- modeltime_calibrate(arima_wf,
+                                  new_data = testing(cv_split))
+
+## Visualize & Evaluate CV accuracy
+cv_results %>%
+  modeltime_accuracy() %>%
+  table_modeltime_accuracy(.interactive = FALSE)
+
+## Refit best model to entire data and predict
+arima_fullfit <- cv_results %>%
+  modeltime_refit(data = subTrain)
+
+p1 <- cv_results %>%
+  modeltime_forecast(
+    new_data = testing(cv_split),
+    actual_data = subTrain) %>%
+  plot_modeltime_forecast(.interactive=TRUE)
+
+## Evaluate the accuracy
+cv_results %>%
+  modeltime_accuracy() %>%
+  table_modeltime_accuracy(.interactive = FALSE)
+
+arima_preds <- arima_fullfit %>%
+  modeltime_forecast(new_data=subTrain) %>%
+  rename(date=.index, sales=.value) %>%
+  select(date, sales) %>%
+  full_join(., y=test, by="date") %>%
+  select(id, sales)
+
+
+p2 <- arima_fullfit %>%
+  modeltime_forecast(h = "3 months", actual_data = subTrain) %>%
+  plot_modeltime_forecast(.interactive=FALSE)
+
+####     redo for a second store/item combo
+
+arima_recipe2 <- recipe(sales ~ ., data = subTrain2) %>% 
+  step_date(date,features = c("year", "doy", "week", "quarter"))
+
+cv_split2 <- time_series_split(subTrain2, assess="3 months", cumulative = TRUE)
+
+S = 180
+
+arima_model2 <- arima_reg(seasonal_period=S,
+                         non_seasonal_ar=5, # default max p to tune
+                         non_seasonal_ma=5, # default max q to tune
+                         seasonal_ar=2, # default max P to tune
+                         seasonal_ma=2, #default max Q to tune
+                         non_seasonal_differences=2, # default max d to tune
+                         seasonal_differences=2 #default max D to tune
+) %>%
+  set_engine("auto_arima")
+
+arima_wf2 <- workflow() %>%
+  add_recipe(arima_recipe2) %>%
+  add_model(arima_model2) %>%
+  fit(data=training(cv_split2))
+
+## Calibrate (i.e. tune) workflow
+cv_results2 <- modeltime_calibrate(arima_wf2,
+                                  new_data = testing(cv_split2))
+
+## Visualize & Evaluate CV accuracy
+cv_results2 %>%
+  modeltime_accuracy() %>%
+  table_modeltime_accuracy(.interactive = FALSE)
+
+## Refit best model to entire data and predict
+arima_fullfit2 <- cv_results2 %>%
+  modeltime_refit(data = subTrain2)
+
+p3 <- cv_results2 %>%
+  modeltime_forecast(
+    new_data = testing(cv_split2),
+    actual_data = subTrain2) %>%
+  plot_modeltime_forecast(.interactive=TRUE)
+
+## Evaluate the accuracy
+cv_results2 %>%
+  modeltime_accuracy() %>%
+  table_modeltime_accuracy(.interactive = FALSE)
+
+arima_preds2 <- arima_fullfit2 %>%
+  # modeltime_forecast(h = "3 months") %>%
+  modeltime_forecast(new_data = subTrain2) %>%
+  rename(date=.index, sales=.value) %>%
+  select(date, sales) %>%
+  full_join(., y=test, by="date") %>%
+  select(id, sales)
+
+
+p4 <- arima_fullfit2 %>%
+  modeltime_forecast(h = "3 months", actual_data = subTrain) %>%
+  plot_modeltime_forecast(.interactive=FALSE)
+
+stopCluster(cl)
 
 plotly::subplot(p1, p2, p3, p4, nrows=2)
