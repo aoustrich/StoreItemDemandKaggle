@@ -7,7 +7,8 @@ library(ranger)
 library(parallel)
 library(timetk)
 library(modeltime)
-library(forecast) #for auto.arima
+library(forecast) # for auto_arima engine
+library(prophet) # for facebook prophet model engine
 
 # Load data
 train <- vroom("data/train.csv")
@@ -167,7 +168,7 @@ plotly::subplot(p1, p2, p3, p4, nrows=2)
 
 
 
-# SARIMA ------------------------------------------------------------------
+# SARIMA 1 ------------------------------------------------------------------
 arima_recipe <- recipe(sales ~ ., data = subTrain) %>% 
   step_date(date,features = c("year", "doy", "week", "quarter"))
 
@@ -230,7 +231,11 @@ p2 <- arima_fullfit %>%
   modeltime_forecast(h = "3 months", actual_data = subTrain) %>%
   plot_modeltime_forecast(.interactive=FALSE)
 
-####     redo for a second store/item combo
+stopCluster(cl)
+
+# SARIMA 2 ------------------------------------------------------------------
+cl <- makePSOCKcluster(4)
+doParallel::registerDoParallel(cl)
 
 arima_recipe2 <- recipe(sales ~ ., data = subTrain2) %>% 
   step_date(date,features = c("year", "doy", "week", "quarter"))
@@ -294,3 +299,86 @@ p4 <- arima_fullfit2 %>%
 stopCluster(cl)
 
 plotly::subplot(p1, p2, p3, p4, nrows=2)
+
+
+# Facebook Prophet Model 1 --------------------------------------------------
+
+cv_split <- time_series_split(subTrain, assess="3 months", cumulative = TRUE)
+
+prophet_model <- prophet_reg() %>%
+  set_engine(engine = "prophet") %>%
+  fit(sales ~ date, data = training(cv_split))
+
+
+## Cross-validate to tune model
+cv_results <- modeltime_calibrate(prophet_model,
+                                  new_data = testing(cv_split))
+## Visualize CV results (top row)
+p1 <- cv_results %>%
+  modeltime_forecast(
+    new_data = testing(cv_split),
+    actual_data = subTrain) %>%
+  plot_modeltime_forecast(.interactive=TRUE)
+
+## Evaluate the accuracy
+cv_results %>%
+  modeltime_accuracy() %>%
+  table_modeltime_accuracy(.interactive = FALSE)
+
+## Refit to all data then forecast
+prophet_fullfit <- cv_results %>%
+  modeltime_refit(data = subTrain)
+
+prophet_preds <- prophet_fullfit %>%
+  modeltime_forecast(h = "3 months") %>%
+  rename(date=.index, sales=.value) %>%
+  select(date, sales) %>%
+  full_join(., y=test, by="date") %>%
+  select(id, sales)
+
+p2 <- prophet_fullfit %>%
+  modeltime_forecast(h = "3 months", actual_data = subTrain) %>%
+  plot_modeltime_forecast(.interactive=FALSE)
+
+# Facebook Prophet Model 2 --------------------------------------------------
+
+cv_split2 <- time_series_split(subTrain2, assess="3 months", cumulative = TRUE)
+
+prophet_model2 <- prophet_reg() %>%
+  set_engine(engine = "prophet") %>%
+  fit(sales ~ date, data = training(cv_split2))
+
+
+## Cross-validate to tune model
+cv_results2 <- modeltime_calibrate(prophet_model2,
+                                  new_data = testing(cv_split2))
+## Visualize CV results (top row)
+p3 <- cv_results2 %>%
+  modeltime_forecast(
+    new_data = testing(cv_split2),
+    actual_data = subTrain2) %>%
+  plot_modeltime_forecast(.interactive=TRUE)
+
+## Evaluate the accuracy
+cv_results2 %>%
+  modeltime_accuracy() %>%
+  table_modeltime_accuracy(.interactive = FALSE)
+
+## Refit to all data then forecast
+prophet_fullfit2 <- cv_results2 %>%
+  modeltime_refit(data = subTrain2)
+
+prophet_preds2 <- prophet_fullfit2 %>%
+  modeltime_forecast(h = "3 months") %>%
+  rename(date=.index, sales=.value) %>%
+  select(date, sales) %>%
+  full_join(., y=test, by="date") %>%
+  select(id, sales)
+
+p4 <- prophet_fullfit2 %>%
+  modeltime_forecast(h = "3 months", actual_data = subTrain2) %>%
+  plot_modeltime_forecast(.interactive=FALSE)
+
+
+plotly::subplot(p1, p3, p2, p4, nrows=2)
+
