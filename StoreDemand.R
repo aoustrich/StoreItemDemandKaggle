@@ -14,6 +14,33 @@ library(prophet) # for facebook prophet model engine
 train <- vroom("data/train.csv")
 test <- vroom("data/test.csv")
 
+# For Loop
+nStores <- max(train$store)
+nItems <- max(train$item)
+for(s in 1:nStores){
+  for(i in 1:nItems){
+    storeItemTrain <- train %>%
+    filter(store==s, item==i)
+    storeItemTest <- test %>%
+    filter(store==s, item==i)
+    
+    ## Fit storeItem models here
+    
+    ## Predict storeItem sales
+    
+    ## Save storeItem predictions
+    if(s==1 & i==1){
+      all_preds <- preds
+    } else {
+      all_preds <- bind_rows(all_preds, preds)
+    }
+    
+  }
+}
+
+vroom_write(all_preds, file=..., delim=...)
+
+
 # Choose one store/item combination for ease of testing (SUBset of TRAINing data = subTrain)
 subTrain <- train %>%
   filter(store == 3, item == 14) %>% 
